@@ -1,0 +1,200 @@
+@page "/roles/{Id:guid}"
+@page "/roles/new"
+
+@using System.Net
+@using System.ComponentModel.DataAnnotations
+@using OIG.Assessment.Application.Dtos
+@using OIG.Assessment.Application.Commands.Roles
+@using OIG.Assessment.Application.Queries.Roles
+@inject RolesApiClient RolesApiClient
+
+<PageTitle>@(_isCreateMode ? "Create Role" : "Edit Role")</PageTitle>
+
+@if (_isLoading)
+{
+    <p>Loading role...</p>
+}
+else
+{
+    <div class="row">
+        <div class="col-md-4">
+            <h5>Organization</h5>
+            <OrganizationNavigation SelectedOrganizationId="_selectedOrganizationId" SelectedOrganizationIdChanged="OnOrganizationChanged" />
+            @if (!string.IsNullOrEmpty(_organizationError))
+            {
+                <div class="alert alert-danger mt-2">@_organizationError</div>
+            }
+        </div>
+        <div class="col-md-8">
+            @if (!string.IsNullOrEmpty(_error))
+            {
+                <div class="alert alert-danger mb-3">@_error</div>
+            }
+            <EditForm Model="_model" OnValidSubmit="SaveAsync">
+                <DataAnnotationsValidator />
+                <ValidationSummary />
+
+                <div class="mb-3">
+                    <label class="form-label">Name</label>
+                    <InputText class="form-control" @bind-Value="_model.Name" />
+                </div>
+
+                <div class="mb-3">
+                    <label class="form-label">Permissions</label>
+                    <div class="row">
+                        @foreach (var permission in _availablePermissions)
+                        {
+                            <div class="col-md-4">
+                                <div class="form-check">
+                                    <input class="form-check-input"
+                                           type="checkbox"
+                                           checked="@_model.SelectedPermissions.Contains(permission)"
+                                           @onchange="@(_ => TogglePermission(permission))" />
+                                    <label class="form-check-label">@permission</label>
+                                </div>
+                            </div>
+                        }
+                    </div>
+                </div>
+
+                <button type="submit" class="btn btn-primary" disabled="@_saving">
+                    @(_isCreateMode ? "Create" : "Save")
+                </button>
+                <a class="btn btn-secondary ms-2" href="/roles">Back</a>
+            </EditForm>
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter] public Guid? Id { get; set; }
+
+    private GetRoleByIdQueryResult? _role;
+    private RoleEditModel _model = new();
+    private List<string> _availablePermissions = new();
+    private Guid? _selectedOrganizationId;
+    private bool _isCreateMode;
+    private bool _isLoading;
+    private bool _saving;
+    private string? _error;
+    private string? _organizationError;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _isLoading = true;
+        _isCreateMode = !Id.HasValue || Id.Value == Guid.Empty;
+        try
+        {
+            _availablePermissions = (await RolesApiClient.GetAvailablePermissionsAsync()).ToList();
+
+            if (_isCreateMode)
+            {
+                _model = new RoleEditModel
+                {
+                    RoleId = Guid.Empty,
+                    Name = string.Empty,
+                    SelectedPermissions = new HashSet<string>()
+                };
+                return;
+            }
+
+            _role = await RolesApiClient.GetByIdAsync(Id.Value);
+            if (_role == null)
+            {
+                _error = "Role not found.";
+                return;
+            }
+
+            _model = new RoleEditModel
+            {
+                RoleId = _role.Id,
+                Name = _role.Name,
+                SelectedPermissions = _role.Permissions.ToHashSet()
+            };
+            _selectedOrganizationId = _role.OrganizationId;
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+
+    private void TogglePermission(string permission)
+    {
+        if (_model.SelectedPermissions.Contains(permission))
+            _model.SelectedPermissions.Remove(permission);
+        else
+            _model.SelectedPermissions.Add(permission);
+    }
+
+    private void OnOrganizationChanged(Guid? organizationId)
+    {
+        _selectedOrganizationId = organizationId;
+        _organizationError = null; // Clear error when organization is selected
+        StateHasChanged();
+    }
+
+    private async Task SaveAsync()
+    {
+        _saving = true;
+        _error = null;
+        _organizationError = null;
+        try
+        {
+            if (_isCreateMode)
+            {
+                if (!_selectedOrganizationId.HasValue || _selectedOrganizationId.Value == Guid.Empty)
+                {
+                    _organizationError = "Please select an organization for the role.";
+                    return;
+                }
+
+                var createRequest = new CreateRoleCommandRequest(
+                    _model.Name,
+                    _selectedOrganizationId.Value,
+                    _model.SelectedPermissions.ToList());
+
+                var (roleId, errorCode, errorMessage) = await RolesApiClient.CreateAsync(createRequest);
+                if (errorCode is not null || !string.IsNullOrEmpty(errorMessage))
+                {
+                    _error = errorMessage ?? $"Error creating role: {errorCode}";
+                    return;
+                }
+            }
+            else
+            {
+                var updateRequest = new UpdateRoleCommandRequest(
+                    _model.RoleId,
+                    _model.Name,
+                    _model.SelectedPermissions.ToList());
+
+                var error = await RolesApiClient.UpdateAsync(updateRequest);
+                if (!string.IsNullOrEmpty(error))
+                {
+                    _error = error;
+                    return;
+                }
+            }
+
+            Navigation.NavigateTo("/roles");
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+    [Inject] private NavigationManager Navigation { get; set; } = default!;
+
+    private class RoleEditModel
+    {
+        public Guid RoleId { get; set; }
+
+        [Required]
+        [MaxLength(200)]
+        public string Name { get; set; } = string.Empty;
+
+        public HashSet<string> SelectedPermissions { get; set; } = new();
+    }
+}
+

@@ -1,0 +1,303 @@
+@page "/users/{Id:guid}"
+@page "/users/new"
+
+@using System.ComponentModel.DataAnnotations
+@using Microsoft.AspNetCore.Components.Forms
+@using OIG.Assessment.Application.Dtos
+@using OIG.Assessment.Application.Commands.Users
+@using OIG.Assessment.Application.Queries.Users
+@inject UsersApiClient UsersApiClient
+
+<PageTitle>@(_isCreateMode ? "Create User" : "Edit User")</PageTitle>
+
+@if (_isLoading)
+{
+    <p>Loading user...</p>
+}
+else if (_editContext == null)
+{
+    <p>Initializing form...</p>
+}
+else
+{
+    <div class="row">
+        <div class="col-md-4">
+            <h5>Organization</h5>
+            <OrganizationNavigation SelectedOrganizationId="_selectedOrganizationId" SelectedOrganizationIdChanged="OnOrganizationChanged" />
+            @if (!string.IsNullOrEmpty(_organizationError))
+            {
+                <div class="alert alert-danger mt-2">@_organizationError</div>
+            }
+        </div>
+        <div class="col-md-8">
+            @if (!string.IsNullOrEmpty(_error))
+            {
+                <div class="alert alert-danger mb-3">@_error</div>
+            }
+            <EditForm EditContext="_editContext" OnValidSubmit="SaveAsync">
+                <DataAnnotationsValidator />
+                <ValidationSummary />
+
+                <div class="mb-3">
+                    <label class="form-label">Name</label>
+                    <InputText class="@GetNameInputClass()" @bind-Value="_model.Name" />
+                    <ValidationMessage For="@(() => _model.Name)" />
+                </div>
+
+                <div class="mb-3">
+                    <label class="form-label">Email</label>
+                    <InputText class="@GetEmailInputClass()" @bind-Value="_model.Email" />
+                    <ValidationMessage For="@(() => _model.Email)" />
+                </div>
+
+                @if (!_isCreateMode)
+                {
+                    <div class="mb-3">
+                        <label class="form-label">Roles</label>
+                        @if (_availableRoles.Count == 0)
+                        {
+                            <p class="text-muted">No roles available for this user.</p>
+                        }
+                        else
+                        {
+                            <div class="row">
+                                @foreach (var role in _availableRoles)
+                                {
+                                    <div class="col-md-6">
+                                        <div class="form-check">
+                                            <input class="form-check-input"
+                                                   type="checkbox"
+                                                   checked="@_model.SelectedRoleIds.Contains(role.Id)"
+                                                   @onchange="@(_ => ToggleRole(role.Id))" />
+                                            <label class="form-check-label">@role.Name</label>
+                                        </div>
+                                    </div>
+                                }
+                            </div>
+                        }
+                        <p class="text-muted small mb-0">Role assignments are applied on save.</p>
+                    </div>
+                }
+                else
+                {
+                    <p class="text-muted">
+                        You can assign roles after the user is created.
+                    </p>
+                }
+
+                <button type="submit" class="btn btn-primary" disabled="@_saving">
+                    @(_isCreateMode ? "Create" : "Save")
+                </button>
+                <a class="btn btn-secondary ms-2" href="/users">Back</a>
+            </EditForm>
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter] public Guid? Id { get; set; }
+
+    private UserEditModel _model = new();
+    private EditContext _editContext = null!;
+    private ValidationMessageStore _validationMessageStore = null!;
+    private bool _isCreateMode;
+    private bool _isLoading;
+    private bool _saving;
+    private string? _error;
+    private string? _organizationError;
+
+    private Guid? _selectedOrganizationId;
+    private readonly HashSet<Guid> _initialRoleIds = new();
+    private List<RoleDtos> _availableRoles = new();
+
+    [Inject] private NavigationManager Navigation { get; set; } = default!;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _isLoading = true;
+        _isCreateMode = !Id.HasValue || Id.Value == Guid.Empty;
+
+        try
+        {
+            if (_isCreateMode)
+            {
+                _model = new UserEditModel();
+            }
+            else
+            {
+                var user = await UsersApiClient.GetByIdAsync(Id.Value);
+                if (user is null)
+                {
+                    _error = "User not found.";
+                    return;
+                }
+
+                _model = new UserEditModel
+                {
+                    UserId = user.Id,
+                    Name = user.Name,
+                    Email = user.Email,
+                    SelectedRoleIds = user.Roles.Select(r => r.Id).ToHashSet()
+                };
+
+                _selectedOrganizationId = user.OrganizationId;
+                foreach (var role in user.Roles)
+                {
+                    _initialRoleIds.Add(role.Id);
+                }
+
+                _availableRoles = (await UsersApiClient.GetAvailableRolesAsync(user.Id)).ToList();
+            }
+
+            _editContext = new EditContext(_model);
+            _validationMessageStore = new ValidationMessageStore(_editContext);
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+
+    private void ToggleRole(Guid roleId)
+    {
+        if (_model.SelectedRoleIds.Contains(roleId))
+            _model.SelectedRoleIds.Remove(roleId);
+        else
+            _model.SelectedRoleIds.Add(roleId);
+    }
+
+    private void OnOrganizationChanged(Guid? organizationId)
+    {
+        _selectedOrganizationId = organizationId;
+        _organizationError = null; // Clear error when organization is selected
+        StateHasChanged();
+    }
+
+    private string GetNameInputClass()
+    {
+        if (_editContext == null) return "form-control";
+        var fieldIdentifier = new FieldIdentifier(_model, nameof(_model.Name));
+        return _editContext.GetValidationMessages(fieldIdentifier).Any() ? "form-control is-invalid" : "form-control";
+    }
+
+    private string GetEmailInputClass()
+    {
+        if (_editContext == null) return "form-control";
+        var fieldIdentifier = new FieldIdentifier(_model, nameof(_model.Email));
+        return _editContext.GetValidationMessages(fieldIdentifier).Any() ? "form-control is-invalid" : "form-control";
+    }
+
+    private async Task SaveAsync()
+    {
+        _saving = true;
+        _error = null;
+        _organizationError = null;
+        _validationMessageStore.Clear();
+
+        try
+        {
+            // Validate organization selection
+            if (!_selectedOrganizationId.HasValue || _selectedOrganizationId.Value == Guid.Empty)
+            {
+                _organizationError = "Please select an organization for the user.";
+                return;
+            }
+
+            // Validate model - this will show validation errors for empty/invalid fields
+            if (!_editContext.Validate())
+            {
+                return;
+            }
+
+            if (_isCreateMode)
+            {
+                var createRequest = new CreateUserCommandRequest(
+                    _model.Name,
+                    _model.Email,
+                    _selectedOrganizationId.Value);
+
+                var (userId, errorCode, errorMessage) = await UsersApiClient.CreateAsync(createRequest);
+                if (errorCode is not null || !string.IsNullOrEmpty(errorMessage))
+                {
+                    // Parse server errors and add them to specific fields
+                    if (errorMessage?.Contains("email", StringComparison.OrdinalIgnoreCase) == true && 
+                        errorMessage.Contains("already exists", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var emailField = new FieldIdentifier(_model, nameof(_model.Email));
+                        _validationMessageStore.Add(emailField, "This email is already in use.");
+                        _editContext.NotifyValidationStateChanged();
+                    }
+                    else
+                    {
+                        _error = errorMessage ?? $"Error creating user: {errorCode}";
+                    }
+                    return;
+                }
+
+                // Navigate to users list after successful creation
+                Navigation.NavigateTo("/users");
+                return;
+            }
+            else
+            {
+                var updateRequest = new UpdateUserCommandRequest(
+                    _model.UserId,
+                    _model.Name,
+                    _model.Email,
+                    _selectedOrganizationId.Value);
+
+                var updateError = await UsersApiClient.UpdateAsync(updateRequest);
+                if (!string.IsNullOrEmpty(updateError))
+                {
+                    // Parse server errors and add them to specific fields
+                    if (updateError.Contains("email", StringComparison.OrdinalIgnoreCase) && 
+                        updateError.Contains("already exists", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var emailField = new FieldIdentifier(_model, nameof(_model.Email));
+                        _validationMessageStore.Add(emailField, "This email is already in use.");
+                        _editContext.NotifyValidationStateChanged();
+                    }
+                    else
+                    {
+                        _error = updateError;
+                    }
+                    return;
+                }
+
+                var rolesToAssign = _model.SelectedRoleIds.Except(_initialRoleIds).ToList();
+                foreach (var roleId in rolesToAssign)
+                {
+                    var assignError = await UsersApiClient.AssignRoleAsync(_model.UserId, roleId);
+                    if (!string.IsNullOrEmpty(assignError))
+                    {
+                        _error = assignError;
+                        return;
+                    }
+                }
+
+                Navigation.NavigateTo("/users");
+            }
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+    private class UserEditModel
+    {
+        public Guid UserId { get; set; }
+
+        [Required]
+        [MaxLength(200)]
+        public string Name { get; set; } = string.Empty;
+
+        [Required]
+        [EmailAddress]
+        [MaxLength(200)]
+        public string Email { get; set; } = string.Empty;
+
+        public HashSet<Guid> SelectedRoleIds { get; set; } = new();
+    }
+}
+

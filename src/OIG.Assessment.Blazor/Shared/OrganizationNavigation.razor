@@ -1,0 +1,219 @@
+@using OIG.Assessment.Application.Dtos
+@using OIG.Assessment.Blazor.Services
+@inject OrganizationApiClient OrganizationApiClient
+@inject UsersApiClient UsersApiClient
+@inject CurrentUserState CurrentUserState
+@implements IDisposable
+
+<div class="org-nav">
+    <div class="org-nav-header">
+        <h3>Organization Navigation</h3>
+        <button class="btn btn-sm btn-outline-secondary" @onclick="ReloadAsync">Reload</button>
+    </div>
+
+    @if (_isLoading)
+    {
+        <p>Loading organizations...</p>
+    }
+    else if (_error is not null)
+    {
+        <div class="alert alert-danger">@_error</div>
+    }
+    else if (_tree is null || _tree.Count == 0)
+    {
+        <p>No organizations found.</p>
+    }
+    else
+    {
+        <ul class="org-tree">
+            @foreach (var root in _tree)
+            {
+                <li>
+                    @RenderNode(root)
+                </li>
+            }
+        </ul>
+
+        @if (SelectedOrganizationId.HasValue)
+        {
+            var name = _selectedOrganizationName ?? FindOrganizationName(SelectedOrganizationId.Value);
+            <p class="mt-2">
+                Selected organization:
+                <strong>@(name ?? SelectedOrganizationId.ToString())</strong>
+            </p>
+            <button class="btn btn-sm btn-outline-secondary" @onclick="ClearSelection">
+                Clear selection
+            </button>
+        }
+        else
+        {
+            <p class="mt-2 text-muted">No organization selected.</p>
+        }
+    }
+</div>
+
+@code {
+    private IReadOnlyList<OrganizationHierarchyItemDto> _tree = Array.Empty<OrganizationHierarchyItemDto>();
+    private bool _isLoading;
+    private string? _error;
+    private string? _selectedOrganizationName;
+
+    [Parameter] public Guid? SelectedOrganizationId { get; set; }
+    [Parameter] public EventCallback<Guid?> SelectedOrganizationIdChanged { get; set; }
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (!CurrentUserState.CurrentUserId.HasValue)
+        {
+            _error = "Спочатку виберіть користувача у верхньому правому куті.";
+            CurrentUserState.Changed += OnCurrentUserChanged;
+            return;
+        }
+
+        CurrentUserState.Changed += OnCurrentUserChanged;
+        await LoadTreeAsync();
+    }
+
+    private async Task LoadTreeAsync()
+    {
+        _isLoading = true;
+        _error = null;
+        try
+        {
+            if (CurrentUserState.CurrentUserId.HasValue)
+            {
+                var user = await UsersApiClient.GetByIdAsync(CurrentUserState.CurrentUserId.Value);
+                if (user is not null)
+                {
+                    if (user.OrganizationName == "System")
+                    {
+                        var fullTree = await OrganizationApiClient.GetTreeAsync();
+                        _tree = fullTree;
+                        return;
+                    }
+
+                    var hierarchy = await OrganizationApiClient.GetHierarchyAsync(user.OrganizationId);
+                    if (hierarchy is not null)
+                    {
+                        _tree = new[] { hierarchy.Organization };
+                        _selectedOrganizationName = hierarchy.Organization.Name;
+                        return;
+                    }
+                }
+            }
+
+            _tree = await OrganizationApiClient.GetTreeAsync();
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+
+    private async void OnCurrentUserChanged()
+    {
+        if (!CurrentUserState.CurrentUserId.HasValue)
+        {
+            _tree = Array.Empty<OrganizationHierarchyItemDto>();
+            _error = "Спочатку виберіть користувача у верхньому правому куті.";
+            StateHasChanged();
+            return;
+        }
+
+        await LoadTreeAsync();
+        StateHasChanged();
+    }
+
+    private async Task ReloadAsync()
+    {
+        await LoadTreeAsync();
+    }
+
+    private RenderFragment RenderNode(OrganizationHierarchyItemDto node) => builder =>
+    {
+        var isSelected = SelectedOrganizationId == node.Id;
+        var seq = 0;
+
+        builder.OpenElement(seq++, "div");
+        builder.AddAttribute(seq++, "class", isSelected ? "org-node selected" : "org-node");
+        builder.AddAttribute(seq++, "onclick", EventCallback.Factory.Create(this, () => OnSelectAsync(node.Id)));
+        builder.AddContent(seq++, node.Name);
+        builder.CloseElement();
+
+        if (node.Children is { Count: > 0 })
+        {
+            builder.OpenElement(seq++, "ul");
+            builder.AddAttribute(seq++, "class", "org-children");
+            foreach (var child in node.Children)
+            {
+                builder.OpenElement(seq++, "li");
+                builder.AddContent(seq++, RenderNode(child));
+                builder.CloseElement();
+            }
+            builder.CloseElement();
+        }
+    };
+
+    private async Task OnSelectAsync(Guid id)
+    {
+        SelectedOrganizationId = id;
+        _selectedOrganizationName = FindOrganizationName(id);
+        if (SelectedOrganizationIdChanged.HasDelegate)
+        {
+            await SelectedOrganizationIdChanged.InvokeAsync(id);
+        }
+    }
+
+    private async Task ClearSelection()
+    {
+        SelectedOrganizationId = null;
+        _selectedOrganizationName = null;
+        if (SelectedOrganizationIdChanged.HasDelegate)
+        {
+            await SelectedOrganizationIdChanged.InvokeAsync(null);
+        }
+    }
+
+    private string? FindOrganizationName(Guid id)
+    {
+        if (_tree is null)
+            return null;
+
+        foreach (var root in _tree)
+        {
+            var name = FindInSubtree(root, id);
+            if (name is not null)
+                return name;
+        }
+
+        return null;
+    }
+
+    private static string? FindInSubtree(OrganizationHierarchyItemDto node, Guid id)
+    {
+        if (node.Id == id)
+            return node.Name;
+
+        if (node.Children is { Count: > 0 })
+        {
+            foreach (var child in node.Children)
+            {
+                var name = FindInSubtree(child, id);
+                if (name is not null)
+                    return name;
+            }
+        }
+
+        return null;
+    }
+
+    public void Dispose()
+    {
+        CurrentUserState.Changed -= OnCurrentUserChanged;
+    }
+}
+

@@ -1,0 +1,77 @@
+@page "/organizations"
+
+@using OIG.Assessment.Application.Dtos
+@using OIG.Assessment.Domain.Common
+@inject OrganizationApiClient OrganizationApiClient
+@inject UsersApiClient UsersApiClient
+@inject CurrentUserState CurrentUserState
+@implements IDisposable
+
+<PageTitle>Organizations</PageTitle>
+
+<h1>Organizations</h1>
+
+@if (CanCreateRootOrganization)
+{
+    <div class="mb-3">
+        <a class="btn btn-success" href="/organizations/new">Create organization</a>
+    </div>
+}
+
+<div class="row">
+    <div class="col-md-4">
+        <OrganizationNavigation @bind-SelectedOrganizationId="_selectedOrganizationId" />
+    </div>
+    <div class="col-md-8">
+        @if (_selectedOrganizationId.HasValue)
+        {
+            <h5>Selected organization</h5>
+            <p>
+                Id: <strong>@_selectedOrganizationId</strong>
+            </p>
+            @if (CanEditOrganization)
+            {
+                <a class="btn btn-sm btn-outline-primary mb-3" href="@($"/organizations/{_selectedOrganizationId}")">Edit</a>
+            }
+        }
+        else
+        {
+            <p class="text-muted">Select organization from the tree.</p>
+        }
+    </div>
+</div>
+
+@code {
+    private Guid? _selectedOrganizationId;
+    private HashSet<string> _permissions = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        CurrentUserState.Changed += OnCurrentUserChanged;
+        await LoadPermissionsAsync();
+    }
+
+    private async void OnCurrentUserChanged()
+    {
+        await LoadPermissionsAsync();
+        StateHasChanged();
+    }
+
+    private async Task LoadPermissionsAsync()
+    {
+        if (!CurrentUserState.CurrentUserId.HasValue)
+            return;
+
+        var perms = await UsersApiClient.GetPermissionsAsync(CurrentUserState.CurrentUserId.Value);
+        _permissions = perms.ToHashSet();
+    }
+
+    private bool CanEditOrganization => _permissions.Contains(Permissions.EditOrganization);
+    private bool CanCreateRootOrganization => _permissions.Contains(Permissions.AddRootOrganization);
+
+    public void Dispose()
+    {
+        CurrentUserState.Changed -= OnCurrentUserChanged;
+    }
+}
+

@@ -1,0 +1,230 @@
+@page "/organizations/{Id:guid}"
+
+@using System.ComponentModel.DataAnnotations
+@using OIG.Assessment.Application.Dtos
+@using OIG.Assessment.Application.Commands.Organizations
+@using OIG.Assessment.Application.Queries.Organizations
+@using OIG.Assessment.Domain.Common
+@inject OrganizationApiClient OrganizationApiClient
+@inject UsersApiClient UsersApiClient
+@inject CurrentUserState CurrentUserState
+@inject NavigationManager Navigation
+@inject IJSRuntime JSRuntime
+
+<PageTitle>Edit Organization</PageTitle>
+
+@if (_isLoading)
+{
+    <p>Loading organization...</p>
+}
+else if (!string.IsNullOrEmpty(_error))
+{
+    <div class="alert alert-danger">@_error</div>
+}
+else if (_organization is not null)
+{
+    <div class="row">
+        <div class="col-md-4">
+            <h5>Parent organization</h5>
+            @if (_organization.Organization.ParentId.HasValue)
+            {
+                <p class="text-muted">@(_allOrganizations.FirstOrDefault(o => o.Id == _organization.Organization.ParentId.Value)?.Name ?? "Unknown")</p>
+            }
+            else
+            {
+                <p class="text-muted">No parent</p>
+            }
+
+            <h5 class="mt-4">Children</h5>
+            @if (_children.Count == 0)
+            {
+                <p class="text-muted">No children.</p>
+            }
+            else
+            {
+                <ul>
+                    @foreach (var child in _children)
+                    {
+                        <li>@child.Name (@child.Id)</li>
+                    }
+                </ul>
+            }
+
+            @if (CanAddOrganization)
+            {
+                <div class="mt-3">
+                    <label class="form-label">Add child organization</label>
+                    <input class="form-control mb-2" @bind="_newChildName" />
+                    <button class="btn btn-sm btn-outline-primary" @onclick="CreateChildAsync" disabled="@(_saving || string.IsNullOrWhiteSpace(_newChildName))">Add child</button>
+                </div>
+            }
+        </div>
+        <div class="col-md-8">
+            <EditForm Model="_model" OnValidSubmit="SaveAsync">
+                <DataAnnotationsValidator />
+                <ValidationSummary />
+
+                <div class="mb-3">
+                    <label class="form-label">Name</label>
+                    <InputText class="form-control" @bind-Value="_model.Name" />
+                </div>
+
+                @if (CanEditOrganization)
+                {
+                    <button type="submit" class="btn btn-primary" disabled="@_saving">Save</button>
+                }
+                @if (CanDeleteOrganization)
+                {
+                    <button type="button" class="btn btn-danger ms-2" disabled="@_saving" @onclick="DeleteAsync">Delete</button>
+                }
+                <a class="btn btn-secondary ms-2" href="/organizations">Back</a>
+            </EditForm>
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter] public Guid Id { get; set; }
+
+    private GetOrganizationByIdQueryResult? _organization;
+    private OrganizationEditModel _model = new();
+    private List<OrganizationDto> _allOrganizations = new();
+    private List<OrganizationHierarchyItemDto> _children = new();
+    private string _newChildName = string.Empty;
+    private bool _isLoading;
+    private bool _saving;
+    private string? _error;
+    private HashSet<string> _permissions = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        _isLoading = true;
+        try
+        {
+            await LoadPermissionsAsync();
+
+            _organization = await OrganizationApiClient.GetByIdAsync(Id);
+            if (_organization == null)
+            {
+                _error = "Organization not found.";
+                return;
+            }
+
+            _allOrganizations = (await OrganizationApiClient.GetAllAsync()).ToList();
+
+            var hierarchy = await OrganizationApiClient.GetHierarchyAsync(Id);
+            if (hierarchy != null)
+                _children = hierarchy.Organization.Children.ToList();
+
+            _model = new OrganizationEditModel
+            {
+                OrganizationId = _organization.Organization.Id,
+                Name = _organization.Organization.Name
+            };
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+
+    private async Task LoadPermissionsAsync()
+    {
+        if (!CurrentUserState.CurrentUserId.HasValue)
+            return;
+
+        var perms = await UsersApiClient.GetPermissionsAsync(CurrentUserState.CurrentUserId.Value);
+        _permissions = perms.ToHashSet();
+    }
+
+    private bool CanAddOrganization => _permissions.Contains(Permissions.AddOrganization);
+    private bool CanEditOrganization => _permissions.Contains(Permissions.EditOrganization);
+    private bool CanDeleteOrganization => _permissions.Contains(Permissions.DeleteOrganization);
+
+    private async Task SaveAsync()
+    {
+        if (_organization == null)
+            return;
+
+        _saving = true;
+        _error = null;
+        try
+        {
+            var updateRequest = new UpdateOrganizationCommandRequest(_model.OrganizationId, _model.Name);
+            var updateError = await OrganizationApiClient.UpdateAsync(updateRequest);
+            if (!string.IsNullOrEmpty(updateError))
+            {
+                _error = updateError;
+                return;
+            }
+
+            Navigation.NavigateTo("/organizations");
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+    private async Task DeleteAsync()
+    {
+        if (_organization == null || !CanDeleteOrganization)
+            return;
+        if (!await JSRuntime.InvokeAsync<bool>("confirm", "Delete this organization and all its children, users, and roles?"))
+            return;
+
+        _saving = true;
+        _error = null;
+        try
+        {
+            var deleteError = await OrganizationApiClient.DeleteAsync(_organization.Organization.Id);
+            if (!string.IsNullOrEmpty(deleteError))
+            {
+                _error = deleteError;
+                return;
+            }
+            Navigation.NavigateTo("/organizations");
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+    private async Task CreateChildAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_newChildName))
+            return;
+
+        _saving = true;
+        _error = null;
+        try
+        {
+            var error = await OrganizationApiClient.CreateChildAsync(_newChildName, Id);
+            if (!string.IsNullOrEmpty(error))
+            {
+                _error = error;
+                return;
+            }
+
+            _newChildName = string.Empty;
+            var hierarchy = await OrganizationApiClient.GetHierarchyAsync(Id);
+            if (hierarchy != null)
+                _children = hierarchy.Organization.Children.ToList();
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+    private class OrganizationEditModel
+    {
+        public Guid OrganizationId { get; set; }
+
+        [Required]
+        [MaxLength(200)]
+        public string Name { get; set; } = string.Empty;
+    }
+}
+

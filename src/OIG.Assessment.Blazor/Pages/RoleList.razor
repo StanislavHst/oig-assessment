@@ -1,0 +1,199 @@
+@page "/roles"
+
+@using System.Net
+@using OIG.Assessment.Application.Dtos
+@using OIG.Assessment.Domain.Common
+@inject RolesApiClient RolesApiClient
+@inject UsersApiClient UsersApiClient
+@inject CurrentUserState CurrentUserState
+@inject IJSRuntime JSRuntime
+@implements IDisposable
+
+<PageTitle>Roles</PageTitle>
+
+<h1>Roles</h1>
+
+<div class="row">
+    <div class="col-md-3">
+        <h5>Organizations</h5>
+        <OrganizationNavigation SelectedOrganizationId="_selectedOrganizationId"
+                                SelectedOrganizationIdChanged="OnOrganizationChanged" />
+    </div>
+    <div class="col-md-9">
+        <div class="d-flex mb-3 align-items-end gap-2">
+            <div class="flex-grow-1">
+                <label class="form-label">Search by name</label>
+                <input class="form-control" @bind="_searchName" @bind:event="oninput" />
+            </div>
+            <div class="mb-3">
+                <button class="btn btn-primary" @onclick="SearchAsync" disabled="@_isLoading">Search</button>
+                <button class="btn btn-outline-secondary ms-2" @onclick="ClearOrganizationFilter" disabled="@_isLoading">
+                    Clear org filter
+                </button>
+                @if (CanAddRole)
+                {
+                    <a class="btn btn-success ms-2" href="/roles/new">Create role</a>
+                }
+            </div>
+        </div>
+
+        @if (!string.IsNullOrEmpty(_error))
+        {
+            <div class="alert alert-danger">@_error</div>
+        }
+        else if (_isLoading)
+        {
+            <p>Loading roles...</p>
+        }
+        else if (_roles.Count == 0)
+        {
+            <p class="text-muted">No roles found.</p>
+        }
+        else
+        {
+            <table class="table table-striped table-sm align-middle">
+                <thead>
+                <tr>
+                    <th>Name</th>
+                    <th>Organization</th>
+                    <th>Permissions</th>
+                    <th></th>
+                </tr>
+                </thead>
+                <tbody>
+                @foreach (var role in _roles)
+                {
+                    <tr>
+                        <td>@role.Name</td>
+                        <td>@role.OrganizationName</td>
+                        <td>@string.Join(", ", role.Permissions)</td>
+                        <td>
+                            <div class="btn-group" role="group">
+                                @if (CanEditRole)
+                                {
+                                    <a class="btn btn-sm btn-outline-primary" href="@($"/roles/{role.Id}")">Edit</a>
+                                }
+                                @if (CanDeleteRole)
+                                {
+                                    <button class="btn btn-sm btn-outline-danger" @onclick="@(() => DeleteRoleAsync(role.Id, role.Name))" disabled="@_isLoading">Delete</button>
+                                }
+                            </div>
+                        </td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        }
+    </div>
+</div>
+
+@code {
+    private Guid? _selectedOrganizationId;
+    private string? _searchName;
+    private bool _isLoading;
+    private string? _error;
+    private List<RoleListItemDto> _roles = new();
+    private HashSet<string> _permissions = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        CurrentUserState.Changed += OnCurrentUserChanged;
+        await LoadPermissionsAsync();
+        await SearchAsync();
+    }
+
+    private async void OnCurrentUserChanged()
+    {
+        await LoadPermissionsAsync();
+        await SearchAsync();
+        StateHasChanged();
+    }
+
+    private async Task SearchAsync()
+    {
+        _isLoading = true;
+        _error = null;
+        try
+        {
+            var (roles, errorCode, errorMessage) = await RolesApiClient.SearchAsync(_searchName, _selectedOrganizationId);
+            if (errorCode is HttpStatusCode.Unauthorized)
+            {
+                _roles.Clear();
+                _error = "Спочатку виберіть користувача у верхньому правому куті.";
+            }
+            else if (errorCode is HttpStatusCode.Forbidden)
+            {
+                _roles.Clear();
+                _error = "Обраний користувач не має прав для перегляду ролей.";
+            }
+            else if (!string.IsNullOrEmpty(errorMessage))
+            {
+                _roles.Clear();
+                _error = errorMessage;
+            }
+            else
+            {
+                _roles = roles.ToList();
+            }
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+
+    private async Task LoadPermissionsAsync()
+    {
+        if (!CurrentUserState.CurrentUserId.HasValue)
+            return;
+
+        var perms = await UsersApiClient.GetPermissionsAsync(CurrentUserState.CurrentUserId.Value);
+        _permissions = perms.ToHashSet();
+    }
+
+    private bool CanAddRole => _permissions.Contains(Permissions.AddRole);
+    private bool CanEditRole => _permissions.Contains(Permissions.EditRole);
+    private bool CanDeleteRole => _permissions.Contains(Permissions.DeleteRole);
+
+    private async Task OnOrganizationChanged(Guid? organizationId)
+    {
+        _selectedOrganizationId = organizationId;
+        await SearchAsync();
+    }
+
+    private async Task ClearOrganizationFilter()
+    {
+        _selectedOrganizationId = null;
+        await SearchAsync();
+    }
+
+    private async Task DeleteRoleAsync(Guid roleId, string roleName)
+    {
+        if (!await JSRuntime.InvokeAsync<bool>("confirm", $"Are you sure you want to delete role '{roleName}'?"))
+            return;
+
+        _isLoading = true;
+        _error = null;
+        try
+        {
+            var deleteError = await RolesApiClient.DeleteAsync(roleId);
+            if (!string.IsNullOrEmpty(deleteError))
+            {
+                _error = deleteError;
+                return;
+            }
+
+            await SearchAsync();
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+
+    public void Dispose()
+    {
+        CurrentUserState.Changed -= OnCurrentUserChanged;
+    }
+}
+

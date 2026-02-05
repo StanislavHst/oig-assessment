@@ -1,0 +1,49 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: oig-assessment-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: OIGAssessment
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: 12345678
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  api:
+    build:
+      context: .
+      dockerfile: src/OIG.Assessment.Api/Dockerfile
+    container_name: oig-assessment-api
+    depends_on:
+      - postgres
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      Database__Host: postgres
+      Database__Port: 5432
+      Database__Name: OIGAssessment
+      Database__User: postgres
+      Database__Password: 12345678
+    ports:
+      - "65439:8080"
+
+  blazor:
+    build:
+      context: .
+      dockerfile: src/OIG.Assessment.Blazor/Dockerfile
+    container_name: oig-assessment-blazor
+    depends_on:
+      - api
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ApiBaseUrl: http://api:8080
+    ports:
+      - "65441:8080"
+
+volumes:
+  postgres_data:
+

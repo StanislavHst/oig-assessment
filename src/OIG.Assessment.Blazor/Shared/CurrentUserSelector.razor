@@ -1,0 +1,110 @@
+@using System.Net
+@using Microsoft.JSInterop
+@using OIG.Assessment.Application.Dtos
+@using OIG.Assessment.Blazor.Services
+@inject UsersApiClient UsersApiClient
+@inject CurrentUserState CurrentUserState
+@inject IJSRuntime JsRuntime
+
+<div class="current-user-selector">
+    <label>
+        Current user:
+        <select @onchange="OnUserChanged" value="@_selectedUserIdString">
+            <option value="">[not selected]</option>
+            @if (_users is not null)
+            {
+                foreach (var user in _users)
+                {
+                    <option value="@user.Id">@user.Name (@user.Email)</option>
+                }
+            }
+        </select>
+    </label>
+    @if (!string.IsNullOrEmpty(_error))
+    {
+        <span class="text-danger">@_error</span>
+    }
+</div>
+
+@code
+{
+    private IReadOnlyList<UserDto>? _users;
+    private string? _selectedUserIdString;
+    private string? _error;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var (users, errorCode, errorMessage) = await UsersApiClient.GetForSelectorAsync(CancellationToken.None);
+
+        if (errorCode is HttpStatusCode.Unauthorized)
+        {
+            _error = "Спочатку виберіть користувача у верхньому правому куті.";
+            return;
+        }
+
+        if (errorCode.HasValue || !string.IsNullOrEmpty(errorMessage))
+        {
+            _error = errorMessage ?? $"Error loading users: {errorCode.Value}";
+            return;
+        }
+
+        _users = users;
+
+        if (CurrentUserState.CurrentUserId.HasValue)
+        {
+            _selectedUserIdString = CurrentUserState.CurrentUserId.Value.ToString();
+            return;
+        }
+
+        var first = _users.FirstOrDefault();
+        if (first is null)
+            return;
+
+        _selectedUserIdString = first.Id.ToString();
+        CurrentUserState.SetUser(first.Id);
+    }
+
+    private async Task OnUserChanged(ChangeEventArgs args)
+    {
+        _selectedUserIdString = args.Value?.ToString();
+        if (Guid.TryParse(_selectedUserIdString, out var userId))
+        {
+            CurrentUserState.SetUser(userId);
+            _error = null;
+            await JsRuntime.InvokeVoidAsync("localStorage.setItem", "currentUserId", userId.ToString());
+        }
+        else
+        {
+            CurrentUserState.SetUser(null);
+            await JsRuntime.InvokeVoidAsync("localStorage.removeItem", "currentUserId");
+        }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender)
+            return;
+
+        if (CurrentUserState.CurrentUserId.HasValue)
+            return;
+
+        string? storedUserId = null;
+        try
+        {
+            storedUserId = await JsRuntime.InvokeAsync<string?>("localStorage.getItem", "currentUserId");
+        }
+        catch
+        {
+        }
+
+        if (Guid.TryParse(storedUserId, out var restoredUserId) &&
+            _users is not null &&
+            _users.Any(u => u.Id == restoredUserId))
+        {
+            CurrentUserState.SetUser(restoredUserId);
+            _selectedUserIdString = restoredUserId.ToString();
+            StateHasChanged();
+        }
+    }
+}
+

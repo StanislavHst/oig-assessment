@@ -1,0 +1,84 @@
+@page "/organizations/new"
+
+@using System.ComponentModel.DataAnnotations
+@using OIG.Assessment.Application.Commands.Organizations
+@using OIG.Assessment.Domain.Common
+@inject OrganizationApiClient OrganizationApiClient
+@inject UsersApiClient UsersApiClient
+@inject CurrentUserState CurrentUserState
+@inject NavigationManager Navigation
+
+<PageTitle>Create Organization</PageTitle>
+
+<h1>Create Organization</h1>
+
+<EditForm Model="_model" OnValidSubmit="SubmitCreateAsync">
+    <DataAnnotationsValidator />
+    <ValidationSummary />
+
+    <div class="mb-3">
+        <label class="form-label">Name</label>
+        <InputText class="form-control" @bind-Value="_model.Name" />
+    </div>
+
+    <button type="submit" class="btn btn-primary" disabled="@_saving">Create</button>
+    <a class="btn btn-secondary ms-2" href="/organizations">Cancel</a>
+</EditForm>
+
+@if (!string.IsNullOrEmpty(_error))
+{
+    <div class="alert alert-danger mt-3">@_error</div>
+}
+
+@code {
+    private OrganizationCreateModel _model = new();
+    private bool _saving;
+    private string? _error;
+    private HashSet<string> _permissions = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (!CurrentUserState.CurrentUserId.HasValue)
+        {
+            _error = "Спочатку виберіть користувача у верхньому правому куті.";
+            return;
+        }
+
+        var perms = await UsersApiClient.GetPermissionsAsync(CurrentUserState.CurrentUserId.Value);
+        _permissions = perms.ToHashSet();
+
+        if (!_permissions.Contains(Permissions.AddRootOrganization))
+        {
+            _error = "Only System Admin can create root organizations.";
+            return;
+        }
+    }
+
+    private async Task SubmitCreateAsync()
+    {
+        _saving = true;
+        _error = null;
+        try
+        {
+            var request = new CreateOrganizationCommandRequest(_model.Name, ParentId: null);
+            var error = await OrganizationApiClient.CreateAsync(request);
+            if (!string.IsNullOrEmpty(error))
+            {
+                _error = error;
+                return;
+            }
+            Navigation.NavigateTo("/organizations");
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+    private class OrganizationCreateModel
+    {
+        [Required]
+        [MaxLength(200)]
+        public string Name { get; set; } = string.Empty;
+    }
+}
